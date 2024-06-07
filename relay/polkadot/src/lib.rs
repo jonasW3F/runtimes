@@ -751,6 +751,45 @@ fn polkadot_era_payout(
 	(staking_payout, rest)
 }
 
+fn polkadot_era_payout_old(
+	total_staked: Balance,
+	total_stakable: Balance,
+	max_annual_inflation: Perquintill,
+	period_fraction: Perquintill,
+	auctioned_slots: u64,
+) -> (Balance, Balance) {
+	use pallet_staking_reward_fn::compute_inflation;
+	use sp_runtime::traits::Saturating;
+
+	let min_annual_inflation = Perquintill::from_rational(25u64, 1000u64);
+	let delta_annual_inflation = max_annual_inflation.saturating_sub(min_annual_inflation);
+
+	// old auction propotion.
+	let auction_proportion = Perquintill::from_rational(auctioned_slots.min(60), 200u64);
+
+	// Therefore the ideal amount at stake (as a percentage of total issuance) is 75% less the
+	// amount that we expect to be taken up with auctions.
+	let ideal_stake = Perquintill::from_percent(75).saturating_sub(auction_proportion);
+
+	let stake = Perquintill::from_rational(total_staked, total_stakable);
+	let falloff = Perquintill::from_percent(5);
+	let adjustment = compute_inflation(stake, ideal_stake, falloff);
+	let staking_inflation =
+		min_annual_inflation.saturating_add(delta_annual_inflation * adjustment);
+
+	let max_payout = period_fraction * max_annual_inflation * total_stakable;
+	let staking_payout = (period_fraction * staking_inflation) * total_stakable;
+	let rest = max_payout.saturating_sub(staking_payout);
+
+	let other_issuance = total_stakable.saturating_sub(total_staked);
+	if total_staked > other_issuance {
+		let _cap_rest = Perquintill::from_rational(other_issuance, total_staked) * staking_payout;
+		// We don't do anything with this, but if we wanted to, we could introduce a cap on the
+		// treasury amount with: `rest = rest.min(cap_rest);`
+	}
+	(staking_payout, rest)
+}
+
 pub struct EraPayout;
 impl pallet_staking::EraPayout<Balance> for EraPayout {
 	fn era_payout(
@@ -1142,6 +1181,94 @@ pub enum ProxyType {
 	CancelProxy = 6,
 	Auction = 7,
 	NominationPools = 8,
+}
+
+#[cfg(test)]
+mod era_payout {
+	use super::*;
+	use serde::Deserialize;
+	use std::fs;
+
+	const MILLISECONDS_PER_YEAR: u64 = 1000 * 3600 * 24 * 36525 / 100;
+
+	#[derive(Deserialize, Debug)]
+	struct EraData {
+		n: u32,
+		date: String,
+		at_block_id: u32,
+		era: u32,
+		block_hash: String,
+		eras_total_stake: Balance,
+		total_issuance: Balance,
+		number_of_parachains: u64,
+	}
+
+	#[test]
+	fn simulate() {
+		let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
+		let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
+		let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
+
+		let csv = fs::read("./data.csv").unwrap();
+		let mut b = &csv[..];
+		let mut reader = csv::Reader::from_reader(&mut b);
+
+		for era in reader.deserialize() {
+			let era_data: EraData = era.unwrap();
+			println!(
+				"\n===== Era {:?}, Block ID {:?} ({:?})",
+				era_data.era, era_data.at_block_id, era_data.block_hash
+			);
+			let (payout, rest) = polkadot_era_payout(
+				era_data.eras_total_stake,
+				era_data.total_issuance,
+				max_annual_inflation,
+				period_fraction,
+				era_data.number_of_parachains,
+			);
+			let (sim_payout, sim_rest) = polkadot_era_payout_old(
+				era_data.eras_total_stake,
+				era_data.total_issuance,
+				max_annual_inflation,
+				period_fraction,
+				era_data.number_of_parachains,
+			);
+
+			println!(
+				"> payout (60% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
+				payout, rest
+			);
+			println!(
+				"> simulated payout (52.5% ideal staking rate): \n - stakeres: {:?}\n - rest: {:?}",
+				sim_payout, sim_rest
+			);
+
+			if payout > sim_payout {
+				println!("increase payout of about {:?}%", 100 - ((sim_payout * 100) / payout));
+			} else {
+				println!("decrease payout of about {:?}%", 100 - ((sim_payout * 100) / payout));
+			}
+		}
+
+		// we have from the data:
+		// - total_staked
+		// - total_issuance
+		// - number_paras
+
+		/*
+		let payout = polkadot_era_payout(
+			total_staked,
+			total_stakable,
+			max_annual_inflation,
+			period_fraction,
+			auctioned_slots
+		);
+		*/
+
+		//println!("payout: {:?}", payout);
+
+		assert!(false);
+	}
 }
 
 #[cfg(test)]
