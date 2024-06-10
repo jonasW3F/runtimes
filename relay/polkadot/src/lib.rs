@@ -1234,7 +1234,7 @@ mod era_payout {
 		// print header if csv
 		if csv_output {
 			println!(
-				"date,block_id,era,real_payout,real_remainder,simulated_payout,simulated_remainder"
+				"date,block_id,era,real_payout,real_remainder,simulated_payout,simulated_remainder,t_diff"
 			);
 		}
 
@@ -1265,14 +1265,15 @@ mod era_payout {
 
 			if csv_output {
 				println!(
-					"{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
+					"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
 					era_data.date,
 					era_data.at_block_id,
 					era_data.era,
 					payout,
 					rest,
 					sim_payout,
-					sim_rest
+					sim_rest,
+					(payout + rest) - (sim_payout + sim_rest),
 				);
 			} else {
 				println!(
@@ -1297,6 +1298,11 @@ mod era_payout {
 					//println!("decrease payout of about {:?}%", 100 - ((sim_payout * 100) /
 					// payout));
 				}
+
+				println!(
+					"(payout+rest) - (sim_payout+sim_rest) = {:?}",
+					(payout + rest) - (sim_payout + sim_rest)
+				);
 			}
 		}
 
