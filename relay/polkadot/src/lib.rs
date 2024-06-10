@@ -1218,6 +1218,62 @@ mod era_payout {
 	}
 
 	#[test]
+	fn simulate_final() {
+		let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
+		let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
+		let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
+
+		let csv = fs::read("./data_clean.csv").unwrap();
+		let mut b = &csv[..];
+		let mut reader = csv::Reader::from_reader(&mut b);
+
+		#[derive(Deserialize, Debug)]
+		struct Era {
+			date: String,
+			era: String,
+			block_n: u32,
+			total_staked: Balance,
+			total_issuance: Balance,
+			number_of_parachains: u64,
+		}
+
+		println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff");
+
+		for era in reader.deserialize() {
+			let era_data: Era = era.unwrap();
+			// adjust and remove the sys parachains.
+			let auctioned_slots = era_data.number_of_parachains - 3;
+
+			let (payout, rest) = polkadot_era_payout(
+				era_data.total_staked,
+				era_data.total_issuance,
+				max_annual_inflation,
+				period_fraction,
+				auctioned_slots,
+			);
+			let (sim_payout, sim_rest) = polkadot_era_payout_old(
+				era_data.total_staked,
+				era_data.total_issuance,
+				max_annual_inflation,
+				period_fraction,
+				auctioned_slots,
+			);
+
+			println!(
+				"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
+				era_data.date,
+				era_data.block_n,
+				era_data.era,
+				payout,
+				rest,
+				sim_payout,
+				sim_rest,
+				(payout + rest) - (sim_payout + sim_rest),
+			);
+		}
+	}
+
+	#[test]
 	fn simulate() {
 		// output mode
 		let csv_output = true;
