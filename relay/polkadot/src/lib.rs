@@ -1237,7 +1237,7 @@ mod era_payout {
 			number_of_parachains: u64,
 		}
 
-		println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff");
+		println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff,staking_rate");
 
 		for era in reader.deserialize() {
 			let era_data: Era = era.unwrap();
@@ -1260,7 +1260,7 @@ mod era_payout {
 			);
 
 			println!(
-				"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
+				"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
 				era_data.date,
 				era_data.block_n,
 				era_data.era,
@@ -1269,6 +1269,7 @@ mod era_payout {
 				sim_payout,
 				sim_rest,
 				(payout + rest) - (sim_payout + sim_rest),
+				Perquintill::from_rational(era_data.total_staked, era_data.total_issuance),
 			);
 		}
 	}
