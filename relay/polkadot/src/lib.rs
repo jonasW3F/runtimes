@@ -757,11 +757,12 @@ fn polkadot_era_payout_simulate(
 	falloff: Perquintill,
 	ideal_stake_rate: Perquintill,
 	actual_stake_rate: Perquintill,
+	min_annual_inflation: Perquintill,
+
 ) -> (Balance, Balance) {
 	use pallet_staking_reward_fn::compute_inflation;
 	use sp_runtime::traits::Saturating;
 
-	let min_annual_inflation = Perquintill::from_rational(25u64, 1000u64);
 	let delta_annual_inflation = max_annual_inflation.saturating_sub(min_annual_inflation);
 	let adjustment = compute_inflation(actual_stake_rate, ideal_stake_rate, falloff);
 
@@ -1193,6 +1194,7 @@ mod era_payout {
 		falloff_rate: f64,
 		ideal_stake_rate: f64,
 		actual_stake_rate: f64,
+		min_inflation_rate: f64,
 	}
 
 	fn convert(s: String, mul: Balance) -> Balance {
@@ -1223,6 +1225,7 @@ mod era_payout {
 				"n",
 				"in_current_issuance",
 				"in_max_inflation",
+				"in_min_inflation",
 				"in_falloff",
 				"in_staking_rate",
 				"in_ideal_rate",
@@ -1242,6 +1245,7 @@ mod era_payout {
 				Perquintill::from_rational((row_data.falloff_rate * 100_f64) as u64, 10000),
 				Perquintill::from_rational((row_data.ideal_stake_rate * 100_f64) as u64, 10000),
 				Perquintill::from_rational((row_data.actual_stake_rate * 100_f64) as u64, 10000),
+				Perquintill::from_rational((row_data.min_inflation_rate * 100_f64) as u64, 10000),
 			);
 
 			if csv_output {
@@ -1249,6 +1253,7 @@ mod era_payout {
 					n.to_string(),
 					row_data.current_issuance.to_string(),
 					row_data.max_inflation_rate.to_string(),
+					row_data.min_inflation_rate.to_string(),
 					row_data.falloff_rate.to_string(),
 					row_data.actual_stake_rate.to_string(),
 					row_data.ideal_stake_rate.to_string(),
