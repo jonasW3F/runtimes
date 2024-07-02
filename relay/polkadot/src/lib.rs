@@ -1353,6 +1353,8 @@ mod era_payout {
 	   }
 	*/
 	#[test]
+	/// Run the test with `cargo test -p polkadot-runtime simulate_v2 -- --nocapture`. Input file
+	/// is `stake-and-treasury.csv`.
 	fn simulate_v2() {
 		// output mode
 		let csv_output = true;
@@ -1402,7 +1404,6 @@ mod era_payout {
 				);
 			}
 		}
-		// assert!(false);
 	}
 }
 
