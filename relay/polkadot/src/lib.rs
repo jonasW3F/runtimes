@@ -1180,7 +1180,8 @@ pub enum ProxyType {
 mod era_payout {
 	use super::*;
 	use serde::Deserialize;
-	use std::fs;
+	use std::fs::{self, File};
+	use csv::Writer;
 
 	const MILLISECONDS_PER_YEAR: u64 = 1000 * 3600 * 24 * 36525 / 100;
 
@@ -1188,10 +1189,10 @@ mod era_payout {
 	struct InputParams {
 		n: u32,
 		current_issuance: u128,
-		max_inflation_rate: u64,
-		falloff_rate: u64,
-		ideal_stake_rate: u64,
-		actual_stake_rate: u64,
+		max_inflation_rate: f64,
+		falloff_rate: f64,
+		ideal_stake_rate: f64,
+		actual_stake_rate: f64,
 	}
 
 	fn convert(s: String, mul: Balance) -> Balance {
@@ -1200,158 +1201,7 @@ mod era_payout {
 		let b: String = s.chars().filter(|c| *c != '.').collect();
 		u128::from_str(&b).unwrap() * mul
 	}
-	/*
-	   #[test]
-	   fn simulate_final() {
-		   let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
-		   let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
-		   let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
 
-		   let csv = fs::read("./data_clean.csv").unwrap();
-		   let mut b = &csv[..];
-		   let mut reader = csv::Reader::from_reader(&mut b);
-
-		   #[derive(Deserialize, Debug)]
-		   struct Era {
-			   date: String,
-			   era: String,
-			   block_n: u32,
-			   total_staked: Balance,
-			   total_issuance: Balance,
-			   number_of_parachains: u64,
-		   }
-
-		   println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff,staking_rate");
-
-		   for era in reader.deserialize() {
-			   let era_data: Era = era.unwrap();
-			   // adjust and remove the sys parachains.
-			   let auctioned_slots = era_data.number_of_parachains - 3;
-
-			   let (payout, rest) = polkadot_era_payout(
-				   era_data.total_staked,
-				   era_data.total_issuance,
-				   max_annual_inflation,
-				   period_fraction,
-				   auctioned_slots,
-			   );
-			   let (sim_payout, sim_rest) = polkadot_era_payout_old(
-				   era_data.total_staked,
-				   era_data.total_issuance,
-				   max_annual_inflation,
-				   period_fraction,
-				   auctioned_slots,
-			   );
-
-			   println!(
-				   "{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
-				   era_data.date,
-				   era_data.block_n,
-				   era_data.era,
-				   payout,
-				   rest,
-				   sim_payout,
-				   sim_rest,
-				   (payout + rest) - (sim_payout + sim_rest),
-				   Perquintill::from_rational(era_data.total_staked, era_data.total_issuance),
-			   );
-		   }
-	   }
-
-
-	   #[test]
-
-	   fn simulate() {
-		   // output mode
-		   let csv_output = true;
-
-		   let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
-		   let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
-		   let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
-
-		   let csv = fs::read("./data_original.csv").unwrap();
-
-		   let mut b = &csv[..];
-		   let mut reader = csv::Reader::from_reader(&mut b);
-
-		   // print header if csv
-		   if csv_output {
-			   println!(
-				   "date,block_id,era,real_payout,real_remainder,simulated_payout,simulated_remainder,t_diff"
-			   );
-		   }
-
-		   for era in reader.deserialize() {
-			   let era_data: InputParams = era.unwrap();
-
-			   // adjust and remove the sys parachains.
-			   let auctioned_slots = era_data.number_of_parachains - 3;
-
-			   // adjust conversion to DOT, do conversions.
-			   let total_issuance = convert(era_data.total_issuance, 100000);
-			   let total_stake = convert(era_data.eras_total_stake, 10000);
-
-			   let (payout, rest) = polkadot_era_payout(
-				   total_stake,
-				   total_issuance,
-				   max_annual_inflation,
-				   period_fraction,
-				   auctioned_slots,
-			   );
-			   let (sim_payout, sim_rest) = polkadot_era_payout_old(
-				   total_stake,
-				   total_issuance,
-				   max_annual_inflation,
-				   period_fraction,
-				   auctioned_slots,
-			   );
-
-			   if csv_output {
-				   println!(
-					   "{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
-					   era_data.date,
-					   era_data.at_block_id,
-					   era_data.era,
-					   payout,
-					   rest,
-					   sim_payout,
-					   sim_rest,
-					   (payout + rest) - (sim_payout + sim_rest),
-				   );
-			   } else {
-				   println!(
-					   "\n===== Era {:?}, Block ID {:?} ({:?})",
-					   era_data.era, era_data.at_block_id, era_data.block_hash
-				   );
-
-				   println!(
-					   "> payout (60% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
-					   payout, rest
-				   );
-				   println!(
-				   "> simulated payout (51.5% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
-				   sim_payout, sim_rest
-			   );
-
-				   if payout > sim_payout {
-					   println!("payout > sim_payout");
-				   //println!("increase payout of about {:?}%", 100 - ((sim_payout * 100) / payout));
-				   } else {
-					   println!("payout < sim_payout");
-					   //println!("decrease payout of about {:?}%", 100 - ((sim_payout * 100) /
-					   // payout));
-				   }
-
-				   println!(
-					   "(payout+rest) - (sim_payout+sim_rest) = {:?}",
-					   (payout + rest) - (sim_payout + sim_rest)
-				   );
-			   }
-		   }
-
-		   // assert!(false);
-	   }
-	*/
 	#[test]
 	/// Run the test with `cargo test -p polkadot-runtime simulate_v2 -- --nocapture`. Input file
 	/// is `stake-and-treasury.csv`.
@@ -1363,38 +1213,48 @@ mod era_payout {
 		let mut b = &csv[..];
 		let mut reader = csv::Reader::from_reader(&mut b);
 
+		// Create a file to write the output CSV
+		let output_file = File::create("output.csv").expect("Failed to create output.csv");
+		let mut wtr = Writer::from_writer(output_file);
+
 		// print header if csv
 		if csv_output {
-			println!(
-                "n,in_max_inflation,in_falloff,in_staking_rate,in_ideal_rate,in_current_issuance,out_stake_reward,out_remainder"
-            );
+			wtr.write_record(&[
+				"n",
+				"in_current_issuance",
+				"in_max_inflation",
+				"in_falloff",
+				"in_staking_rate",
+				"in_ideal_rate",
+				"out_stake_reward",
+				"out_remainder"
+			]).expect("Failed to write header to output.csv");
 		}
 
 		let mut n = 0;
 		for row in reader.deserialize() {
-			let row_data: InputParams = row.unwrap();
+			let row_data: InputParams = row.expect("Failed to deserialize row");
 			n += 1;
 
 			let (stake_reward, remainder) = polkadot_era_payout_simulate(
 				row_data.current_issuance,
-				Perquintill::from_percent(row_data.max_inflation_rate),
-				Perquintill::from_percent(row_data.falloff_rate),
-				Perquintill::from_percent(row_data.ideal_stake_rate),
-				Perquintill::from_percent(row_data.actual_stake_rate),
+				Perquintill::from_rational((row_data.max_inflation_rate * 100_f64) as u64, 10000),
+				Perquintill::from_rational((row_data.falloff_rate * 100_f64) as u64, 10000),
+				Perquintill::from_rational((row_data.ideal_stake_rate * 100_f64) as u64, 10000),
+				Perquintill::from_rational((row_data.actual_stake_rate * 100_f64) as u64, 10000),
 			);
 
 			if csv_output {
-				println!(
-					"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
-					n,
-					row_data.current_issuance,
-					row_data.max_inflation_rate,
-					row_data.falloff_rate,
-					row_data.actual_stake_rate,
-					row_data.actual_stake_rate,
-					stake_reward,
-					remainder,
-				);
+				wtr.write_record(&[
+					n.to_string(),
+					row_data.current_issuance.to_string(),
+					row_data.max_inflation_rate.to_string(),
+					row_data.falloff_rate.to_string(),
+					row_data.actual_stake_rate.to_string(),
+					row_data.ideal_stake_rate.to_string(),
+					stake_reward.to_string(),
+					remainder.to_string()
+				]).expect("Failed to write record to output.csv");
 			} else {
 				println!("**\nInput {:?}", row_data);
 				println!(
@@ -1404,6 +1264,9 @@ mod era_payout {
 				);
 			}
 		}
+		// Ensure all records are written to the file
+		wtr.flush().expect("Failed to flush writer");
+		println!("CSV writing completed and flushed.");
 	}
 }
 
