@@ -751,46 +751,32 @@ fn polkadot_era_payout(
 	(staking_payout, rest)
 }
 
-fn polkadot_era_payout_old(
-	total_staked: Balance,
-	total_stakable: Balance,
+fn polkadot_era_payout_simulate(
+	current_issuance: Balance,
 	max_annual_inflation: Perquintill,
-	period_fraction: Perquintill,
-	auctioned_slots: u64,
+	falloff: Perquintill,
+	ideal_stake_rate: Perquintill,
+	actual_stake_rate: Perquintill,
 ) -> (Balance, Balance) {
 	use pallet_staking_reward_fn::compute_inflation;
 	use sp_runtime::traits::Saturating;
 
 	let min_annual_inflation = Perquintill::from_rational(25u64, 1000u64);
 	let delta_annual_inflation = max_annual_inflation.saturating_sub(min_annual_inflation);
+	let adjustment = compute_inflation(actual_stake_rate, ideal_stake_rate, falloff);
 
-	// old auction propotion.
-	let auction_proportion = Perquintill::from_rational(auctioned_slots.min(60), 200u64);
-
-	// Therefore the ideal amount at stake (as a percentage of total issuance) is 75% less the
-	// amount that we expect to be taken up with auctions.
-	let ideal_stake = Perquintill::from_percent(75).saturating_sub(auction_proportion);
-
-	let stake = Perquintill::from_rational(total_staked, total_stakable);
-	let falloff = Perquintill::from_percent(5);
-	let adjustment = compute_inflation(stake, ideal_stake, falloff);
 	let staking_inflation =
 		min_annual_inflation.saturating_add(delta_annual_inflation * adjustment);
 
-	let max_payout = period_fraction * max_annual_inflation * total_stakable;
-	let staking_payout = (period_fraction * staking_inflation) * total_stakable;
+	let max_payout = max_annual_inflation * current_issuance;
+	let staking_payout = staking_inflation * current_issuance;
 	let rest = max_payout.saturating_sub(staking_payout);
 
-	let other_issuance = total_stakable.saturating_sub(total_staked);
-	if total_staked > other_issuance {
-		let _cap_rest = Perquintill::from_rational(other_issuance, total_staked) * staking_payout;
-		// We don't do anything with this, but if we wanted to, we could introduce a cap on the
-		// treasury amount with: `rest = rest.min(cap_rest);`
-	}
 	(staking_payout, rest)
 }
 
 pub struct EraPayout;
+
 impl pallet_staking::EraPayout<Balance> for EraPayout {
 	fn era_payout(
 		total_staked: Balance,
@@ -1199,15 +1185,13 @@ mod era_payout {
 	const MILLISECONDS_PER_YEAR: u64 = 1000 * 3600 * 24 * 36525 / 100;
 
 	#[derive(Deserialize, Debug)]
-	struct EraData {
+	struct InputParams {
 		n: u32,
-		date: String,
-		at_block_id: u32,
-		era: u32,
-		block_hash: String,
-		eras_total_stake: String,
-		total_issuance: String,
-		number_of_parachains: u64,
+		current_issuance: u128,
+		max_inflation_rate: u64,
+		falloff_rate: u64,
+		ideal_stake_rate: u64,
+		actual_stake_rate: u64,
 	}
 
 	fn convert(s: String, mul: Balance) -> Balance {
@@ -1216,74 +1200,163 @@ mod era_payout {
 		let b: String = s.chars().filter(|c| *c != '.').collect();
 		u128::from_str(&b).unwrap() * mul
 	}
+	/*
+	   #[test]
+	   fn simulate_final() {
+		   let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
+		   let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
+		   let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
 
+		   let csv = fs::read("./data_clean.csv").unwrap();
+		   let mut b = &csv[..];
+		   let mut reader = csv::Reader::from_reader(&mut b);
+
+		   #[derive(Deserialize, Debug)]
+		   struct Era {
+			   date: String,
+			   era: String,
+			   block_n: u32,
+			   total_staked: Balance,
+			   total_issuance: Balance,
+			   number_of_parachains: u64,
+		   }
+
+		   println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff,staking_rate");
+
+		   for era in reader.deserialize() {
+			   let era_data: Era = era.unwrap();
+			   // adjust and remove the sys parachains.
+			   let auctioned_slots = era_data.number_of_parachains - 3;
+
+			   let (payout, rest) = polkadot_era_payout(
+				   era_data.total_staked,
+				   era_data.total_issuance,
+				   max_annual_inflation,
+				   period_fraction,
+				   auctioned_slots,
+			   );
+			   let (sim_payout, sim_rest) = polkadot_era_payout_old(
+				   era_data.total_staked,
+				   era_data.total_issuance,
+				   max_annual_inflation,
+				   period_fraction,
+				   auctioned_slots,
+			   );
+
+			   println!(
+				   "{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
+				   era_data.date,
+				   era_data.block_n,
+				   era_data.era,
+				   payout,
+				   rest,
+				   sim_payout,
+				   sim_rest,
+				   (payout + rest) - (sim_payout + sim_rest),
+				   Perquintill::from_rational(era_data.total_staked, era_data.total_issuance),
+			   );
+		   }
+	   }
+
+
+	   #[test]
+
+	   fn simulate() {
+		   // output mode
+		   let csv_output = true;
+
+		   let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
+		   let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
+		   let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
+
+		   let csv = fs::read("./data_original.csv").unwrap();
+
+		   let mut b = &csv[..];
+		   let mut reader = csv::Reader::from_reader(&mut b);
+
+		   // print header if csv
+		   if csv_output {
+			   println!(
+				   "date,block_id,era,real_payout,real_remainder,simulated_payout,simulated_remainder,t_diff"
+			   );
+		   }
+
+		   for era in reader.deserialize() {
+			   let era_data: InputParams = era.unwrap();
+
+			   // adjust and remove the sys parachains.
+			   let auctioned_slots = era_data.number_of_parachains - 3;
+
+			   // adjust conversion to DOT, do conversions.
+			   let total_issuance = convert(era_data.total_issuance, 100000);
+			   let total_stake = convert(era_data.eras_total_stake, 10000);
+
+			   let (payout, rest) = polkadot_era_payout(
+				   total_stake,
+				   total_issuance,
+				   max_annual_inflation,
+				   period_fraction,
+				   auctioned_slots,
+			   );
+			   let (sim_payout, sim_rest) = polkadot_era_payout_old(
+				   total_stake,
+				   total_issuance,
+				   max_annual_inflation,
+				   period_fraction,
+				   auctioned_slots,
+			   );
+
+			   if csv_output {
+				   println!(
+					   "{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
+					   era_data.date,
+					   era_data.at_block_id,
+					   era_data.era,
+					   payout,
+					   rest,
+					   sim_payout,
+					   sim_rest,
+					   (payout + rest) - (sim_payout + sim_rest),
+				   );
+			   } else {
+				   println!(
+					   "\n===== Era {:?}, Block ID {:?} ({:?})",
+					   era_data.era, era_data.at_block_id, era_data.block_hash
+				   );
+
+				   println!(
+					   "> payout (60% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
+					   payout, rest
+				   );
+				   println!(
+				   "> simulated payout (51.5% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
+				   sim_payout, sim_rest
+			   );
+
+				   if payout > sim_payout {
+					   println!("payout > sim_payout");
+				   //println!("increase payout of about {:?}%", 100 - ((sim_payout * 100) / payout));
+				   } else {
+					   println!("payout < sim_payout");
+					   //println!("decrease payout of about {:?}%", 100 - ((sim_payout * 100) /
+					   // payout));
+				   }
+
+				   println!(
+					   "(payout+rest) - (sim_payout+sim_rest) = {:?}",
+					   (payout + rest) - (sim_payout + sim_rest)
+				   );
+			   }
+		   }
+
+		   // assert!(false);
+	   }
+	*/
 	#[test]
-	fn simulate_final() {
-		let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
-		let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
-		let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
-
-		let csv = fs::read("./data_clean.csv").unwrap();
-		let mut b = &csv[..];
-		let mut reader = csv::Reader::from_reader(&mut b);
-
-		#[derive(Deserialize, Debug)]
-		struct Era {
-			date: String,
-			era: String,
-			block_n: u32,
-			total_staked: Balance,
-			total_issuance: Balance,
-			number_of_parachains: u64,
-		}
-
-		println!("date,block_n,era,payout,remainder,simulated_payout,simulated_remainder,t_diff,staking_rate");
-
-		for era in reader.deserialize() {
-			let era_data: Era = era.unwrap();
-			// adjust and remove the sys parachains.
-			let auctioned_slots = era_data.number_of_parachains - 3;
-
-			let (payout, rest) = polkadot_era_payout(
-				era_data.total_staked,
-				era_data.total_issuance,
-				max_annual_inflation,
-				period_fraction,
-				auctioned_slots,
-			);
-			let (sim_payout, sim_rest) = polkadot_era_payout_old(
-				era_data.total_staked,
-				era_data.total_issuance,
-				max_annual_inflation,
-				period_fraction,
-				auctioned_slots,
-			);
-
-			println!(
-				"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
-				era_data.date,
-				era_data.block_n,
-				era_data.era,
-				payout,
-				rest,
-				sim_payout,
-				sim_rest,
-				(payout + rest) - (sim_payout + sim_rest),
-				Perquintill::from_rational(era_data.total_staked, era_data.total_issuance),
-			);
-		}
-	}
-
-	#[test]
-	fn simulate() {
+	fn simulate_v2() {
 		// output mode
 		let csv_output = true;
-
-		let avg_era_milis: u64 = 1_696_001_778_000 - 1_695_915_378_000; // TODO: tune?
-		let period_fraction = Perquintill::from_rational(avg_era_milis, MILLISECONDS_PER_YEAR);
-		let max_annual_inflation: Perquintill = Perquintill::from_percent(10);
-
-		let csv = fs::read("./data_original.csv").unwrap();
+		let csv = fs::read("./stake-and-treasury.csv").unwrap();
 
 		let mut b = &csv[..];
 		let mut reader = csv::Reader::from_reader(&mut b);
@@ -1291,79 +1364,45 @@ mod era_payout {
 		// print header if csv
 		if csv_output {
 			println!(
-				"date,block_id,era,real_payout,real_remainder,simulated_payout,simulated_remainder,t_diff"
-			);
+                "n,in_max_inflation,in_falloff,in_staking_rate,in_ideal_rate,in_current_issuance,out_stake_reward,out_remainder"
+            );
 		}
 
-		for era in reader.deserialize() {
-			let era_data: EraData = era.unwrap();
+		let mut n = 0;
+		for row in reader.deserialize() {
+			let row_data: InputParams = row.unwrap();
+			n += 1;
 
-			// adjust and remove the sys parachains.
-			let auctioned_slots = era_data.number_of_parachains - 3;
-
-			// adjust conversion to DOT, do conversions.
-			let total_issuance = convert(era_data.total_issuance, 100000);
-			let total_stake = convert(era_data.eras_total_stake, 10000);
-
-			let (payout, rest) = polkadot_era_payout(
-				total_stake,
-				total_issuance,
-				max_annual_inflation,
-				period_fraction,
-				auctioned_slots,
-			);
-			let (sim_payout, sim_rest) = polkadot_era_payout_old(
-				total_stake,
-				total_issuance,
-				max_annual_inflation,
-				period_fraction,
-				auctioned_slots,
+			let (stake_reward, remainder) = polkadot_era_payout_simulate(
+				row_data.current_issuance,
+				Perquintill::from_percent(row_data.max_inflation_rate),
+				Perquintill::from_percent(row_data.falloff_rate),
+				Perquintill::from_percent(row_data.ideal_stake_rate),
+				Perquintill::from_percent(row_data.actual_stake_rate),
 			);
 
 			if csv_output {
 				println!(
 					"{:?},{:?},{:?},{:?},{:?},{:?},{:?},{:?}",
-					era_data.date,
-					era_data.at_block_id,
-					era_data.era,
-					payout,
-					rest,
-					sim_payout,
-					sim_rest,
-					(payout + rest) - (sim_payout + sim_rest),
+					n,
+					row_data.current_issuance,
+					row_data.max_inflation_rate,
+					row_data.falloff_rate,
+					row_data.actual_stake_rate,
+					row_data.actual_stake_rate,
+					stake_reward,
+					remainder,
 				);
 			} else {
+				println!("**\nInput {:?}", row_data);
 				println!(
-					"\n===== Era {:?}, Block ID {:?} ({:?})",
-					era_data.era, era_data.at_block_id, era_data.block_hash
-				);
-
-				println!(
-					"> payout (60% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
-					payout, rest
-				);
-				println!(
-				"> simulated payout (51.5% ideal staking rate): \n - stakers: {:?}\n - rest: {:?}",
-				sim_payout, sim_rest
-			);
-
-				if payout > sim_payout {
-					println!("payout > sim_payout");
-				//println!("increase payout of about {:?}%", 100 - ((sim_payout * 100) / payout));
-				} else {
-					println!("payout < sim_payout");
-					//println!("decrease payout of about {:?}%", 100 - ((sim_payout * 100) /
-					// payout));
-				}
-
-				println!(
-					"(payout+rest) - (sim_payout+sim_rest) = {:?}",
-					(payout + rest) - (sim_payout + sim_rest)
+					"(stake_reward, remainder) = ({:?}M, {:?}M)",
+					stake_reward / 10u128.pow(16),
+					remainder / 10u128.pow(16)
 				);
 			}
 		}
-
-		assert!(false);
+		// assert!(false);
 	}
 }
 
